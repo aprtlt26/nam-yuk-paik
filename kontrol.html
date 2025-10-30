@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Yuca Controller</title>
+<style>
+  :root{--bd:#333}
+  body{margin:0;background:#0b0b0b;color:#eee;font-family:system-ui,Segoe UI,Arial}
+  .wrap{max-width:520px;margin:0 auto;padding:16px}
+  h1{font-size:18px;margin:6px 0 12px 0}
+  .row{margin:.7rem 0}
+  label{font-size:12px;opacity:.85}
+  input[type="range"]{width:100%}
+  .card{border:1px solid var(--bd);border-radius:12px;padding:12px;background:#111}
+  .flex{display:flex;gap:12px;align-items:center}
+  .cap{font-variant:all-small-caps;opacity:.8}
+  .pill{display:inline-block;padding:.25rem .5rem;border:1px solid #444;border-radius:999px;font-size:12px}
+  button{padding:6px 10px;border:1px solid #444;background:#1a1a1a;color:#eee;border-radius:8px}
+  input[type="text"]{flex:1;max-width:220px;background:#0b0b0b;color:#eee;border:1px solid #333;border-radius:8px;padding:6px}
+  .muted{opacity:.5;pointer-events:none}
+  hr{border:none;border-top:1px solid #222;margin:12px 0;opacity:.45}
+</style>
+<!-- Firebase compat -->
+<script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-database-compat.js"></script>
+</head>
+<body>
+<div class="wrap">
+  <h1>Yuca Controller <span id="roomtag" class="pill">(sin room)</span></h1>
+
+  <div class="card" id="panel">
+    <div class="row flex">
+      <label class="cap">Room</label>
+      <input id="room" placeholder="CASABE1" type="text">
+      <button id="connect">Conectar</button>
+    </div>
+
+    <div class="row">
+      <label>Escala</label>
+      <input id="sc" type="range" min="0.30" max="2.00" step="0.01" value="0.90">
+      <div><span id="scv">0.90</span></div>
+    </div>
+    <div class="row">
+      <label>Rotación (°)</label>
+      <input id="rot" type="range" min="-45" max="45" step="0.1" value="0">
+      <div><span id="rotv">0.0</span></div>
+    </div>
+    <div class="row">
+      <label>Opacidad cámara</label>
+      <input id="vop" type="range" min="0" max="0.7" step="0.01" value="0.10">
+      <div><span id="vopv">0.10</span></div>
+    </div>
+    <div class="row">
+      <label>Umbral textura (LBP)</label>
+      <input id="lbp" type="range" min="0.05" max="0.60" step="0.01" value="0.22">
+      <div><span id="lbpv">0.22</span></div>
+    </div>
+    <div class="row">
+      <label>Umbral alineación (IoU)</label>
+      <input id="iou" type="range" min="0.05" max="0.60" step="0.01" value="0.28">
+      <div><span id="iouv">0.28</span></div>
+    </div>
+    <div class="row">
+      <label>Color construcción</label><br>
+      <input id="col" type="color" value="#88ccff">
+      <span id="colv">#88CCFF</span>
+    </div>
+    <div class="row">
+      <label>Tamaño partícula (px)</label>
+      <input id="psz" type="range" min="0.5" max="6.0" step="0.1" value="1.0">
+      <div><span id="pszv">1.0</span></div>
+    </div>
+
+    <div class="row flex">
+      <label class="cap">UI en display</label>
+      <input id="hideUi" type="checkbox"> <span> Ocultar panel en el display</span>
+    </div>
+
+    <!-- AUDIO REMOTO -->
+    <hr>
+    <div class="row">
+      <label>Volumen audio</label>
+      <input id="gain" type="range" min="0" max="1" step="0.01" value="1">
+      <div><span id="gainv">1.00</span></div>
+    </div>
+    <div class="row">
+      <label>Reverb (wet)</label>
+      <input id="rev" type="range" min="0" max="1" step="0.01" value="0">
+      <div><span id="revv">0.00</span></div>
+    </div>
+    <div class="row">
+      <label>Paneo</label>
+      <input id="pan" type="range" min="-1" max="1" step="0.01" value="0">
+      <div><span id="panv">0.00</span></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+
+/* ===== Firebase init ===== */
+const firebaseConfig = {
+  apiKey: "AIzaSyBjuVLR5PDrQ6WpRvIt3561fNzabscw-NI",
+  authDomain: "yuca-8f746.firebaseapp.com",
+  databaseURL: "https://yuca-8f746-default-rtdb.firebaseio.com",
+  projectId: "yuca-8f746",
+  storageBucket: "yuca-8f746.firebasestorage.app",
+  messagingSenderId: "103587360233",
+  appId: "1:103587360233:web:5e64f1be508848ee97af78",
+  measurementId: "G-4WJT8PF1C8"
+};
+if (firebase.apps.length === 0) firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+
+/* ===== estado local ===== */
+let refCtrl = null;
+let hydrating = true;           // mientras lee la primera vez
+let sendTimer = null;
+const SEND_DELAY = 180;         // <-- clave
+const state = {
+  sc: 0.90,
+  rotDeg: 0,
+  vop: 0.10,
+  sensLBP: 0.22,
+  thrIoU: 0.28,
+  color: '#88ccff',
+  psz: 1.0,
+  hideUi: false,
+  gain: 1.0,
+  rev: 0.0,
+  pan: 0.0
+};
+// campos que hay que mandar
+const dirty = new Set();
+
+/* ===== ui enable/disable ===== */
+function enableControls(on){
+  $('#panel').classList.toggle('muted', !on);
+  ['sc','rot','vop','lbp','iou','psz','col','hideUi','gain','rev','pan'].forEach(id=>{
+    const el = $('#'+id);
+    if (el) el.disabled = !on;
+  });
+}
+
+/* ===== conectar ===== */
+const roomFromUrl = new URLSearchParams(location.search).get('room');
+if (roomFromUrl) $('#room').value = roomFromUrl.toUpperCase();
+
+function connectRoom(){
+  let room = $('#room').value.trim();
+  if(!room){ alert('Pon un nombre de room, ej: CASABE1'); return; }
+  room = room.toUpperCase();
+  $('#room').value = room;
+  $('#roomtag').textContent = room;
+  refCtrl = db.ref(`rooms/${room}/ctrl`);
+  enableControls(true);
+
+  // 1) hidratar
+  refCtrl.on('value', snap => {
+    const v = snap.val();
+    if (!v) { hydrating = false; return; }
+
+    // solo copiamos lo que venga
+    if (typeof v.sc === 'number'){ state.sc = v.sc; $('#sc').value = v.sc; $('#scv').textContent = v.sc.toFixed(2); }
+    if (typeof v.rotDeg === 'number'){ state.rotDeg = v.rotDeg; $('#rot').value = v.rotDeg; $('#rotv').textContent = v.rotDeg.toFixed(1); }
+    if (typeof v.vop === 'number'){ state.vop = v.vop; $('#vop').value = v.vop; $('#vopv').textContent = v.vop.toFixed(2); }
+    if (typeof v.sensLBP === 'number'){ state.sensLBP = v.sensLBP; $('#lbp').value = v.sensLBP; $('#lbpv').textContent = v.sensLBP.toFixed(2); }
+    if (typeof v.thrIoU === 'number'){ state.thrIoU = v.thrIoU; $('#iou').value = v.thrIoU; $('#iouv').textContent = v.thrIoU.toFixed(2); }
+    if (typeof v.color === 'string'){ state.color = v.color; $('#col').value = v.color; $('#colv').textContent = v.color.toUpperCase(); }
+    if (typeof v.psz === 'number'){ state.psz = v.psz; $('#psz').value = v.psz; $('#pszv').textContent = v.psz.toFixed(1); }
+    if (typeof v.hideUi === 'boolean'){ state.hideUi = v.hideUi; $('#hideUi').checked = v.hideUi; }
+    // audio
+    if (typeof v.gain === 'number'){ state.gain = v.gain; $('#gain').value = v.gain; $('#gainv').textContent = v.gain.toFixed(2); }
+    if (typeof v.rev === 'number'){ state.rev = v.rev; $('#rev').value = v.rev; $('#revv').textContent = v.rev.toFixed(2); }
+    if (typeof v.pan === 'number'){ state.pan = v.pan; $('#pan').value = v.pan; $('#panv').textContent = v.pan.toFixed(2); }
+
+    // ya podemos mandar cambios después
+    hydrating = false;
+  });
+}
+$('#connect').addEventListener('click', connectRoom);
+
+// autoconecta
+if (!roomFromUrl) {
+  $('#room').value = 'CASABE1';
+  connectRoom();
+}
+
+/* ===== envío agrupado ===== */
+function scheduleSend(){
+  if (!refCtrl) return;
+  if (hydrating) return;   // no mandar mientras se hidrata
+  clearTimeout(sendTimer);
+  sendTimer = setTimeout(()=>{
+    if (dirty.size === 0) return;
+    const payload = {};
+    dirty.forEach(k => { payload[k] = state[k]; });
+    payload.ts = Date.now();
+    refCtrl.update(payload).catch(err=>console.error('[update]', err));
+    dirty.clear();
+  }, SEND_DELAY);
+}
+
+/* ===== listeners de UI ===== */
+function onRange(id, key, mirrorSel, decimals){
+  const el = $('#'+id);
+  el.addEventListener('input', e => {
+    if (hydrating) return;
+    const v = parseFloat(e.target.value);
+    // evitar mandar por cambios mínimos (sobre todo en pan)
+    if (Math.abs(state[key] - v) < 0.01) {
+      // solo espejo visual
+      if (mirrorSel) $(mirrorSel).textContent = v.toFixed(decimals);
+      return;
+    }
+    state[key] = v;
+    if (mirrorSel) $(mirrorSel).textContent = v.toFixed(decimals);
+    dirty.add(key);
+    scheduleSend();
+  });
+}
+onRange('sc', 'sc', '#scv', 2);
+onRange('rot', 'rotDeg', '#rotv', 1);
+onRange('vop', 'vop', '#vopv', 2);
+onRange('lbp', 'sensLBP', '#lbpv', 2);
+onRange('iou', 'thrIoU', '#iouv', 2);
+onRange('psz', 'psz', '#pszv', 1);
+onRange('gain', 'gain', '#gainv', 2);
+onRange('rev', 'rev', '#revv', 2);
+
+// paneo: igual pero lo hacemos un pelo más sensible
+$('#pan').addEventListener('input', e => {
+  if (hydrating) return;
+  const v = parseFloat(e.target.value);
+  // si se mueve solo un poquito, no mandamos
+  if (Math.abs(state.pan - v) < 0.015) {
+    $('#panv').textContent = v.toFixed(2);
+    return;
+  }
+  state.pan = v;
+  $('#panv').textContent = v.toFixed(2);
+  dirty.add('pan');
+  scheduleSend();
+});
+
+$('#col').addEventListener('input', e => {
+  if (hydrating) return;
+  const v = e.target.value;
+  if (state.color === v) return;
+  state.color = v;
+  $('#colv').textContent = v.toUpperCase();
+  dirty.add('color');
+  scheduleSend();
+});
+
+$('#hideUi').addEventListener('change', e => {
+  if (hydrating) return;
+  state.hideUi = e.target.checked;
+  dirty.add('hideUi');
+  scheduleSend();
+});
+
+// enter en room
+$('#room').addEventListener('keyup', e => {
+  if (e.key === 'Enter') connectRoom();
+});
+</script>
+</body>
+</html>
