@@ -100,7 +100,7 @@
 <script>
 const $ = s => document.querySelector(s);
 
-/* ===== Firebase init ===== */
+// ===== Firebase init =====
 const firebaseConfig = {
   apiKey: "AIzaSyBjuVLR5PDrQ6WpRvIt3561fNzabscw-NI",
   authDomain: "yuca-8f746.firebaseapp.com",
@@ -114,12 +114,16 @@ const firebaseConfig = {
 if (firebase.apps.length === 0) firebase.initializeApp(firebaseConfig);
 const db = firebase.database();
 
-/* ===== estado local ===== */
 let refCtrl = null;
-let hydrating = true;           // mientras lee la primera vez
-let sendTimer = null;
-const SEND_DELAY = 180;         // <-- clave
-const state = {
+let refAudio = null;
+let hydratingCtrl = true;
+let hydratingAudio = true;
+let sendTimerCtrl = null;
+let sendTimerAudio = null;
+const SEND_DELAY = 160;
+
+// estado local separados
+const ctrlState = {
   sc: 0.90,
   rotDeg: 0,
   vop: 0.10,
@@ -127,15 +131,17 @@ const state = {
   thrIoU: 0.28,
   color: '#88ccff',
   psz: 1.0,
-  hideUi: false,
+  hideUi: false
+};
+const audioState = {
   gain: 1.0,
   rev: 0.0,
   pan: 0.0
 };
-// campos que hay que mandar
-const dirty = new Set();
+const dirtyCtrl  = new Set();
+const dirtyAudio = new Set();
 
-/* ===== ui enable/disable ===== */
+// enable/disable
 function enableControls(on){
   $('#panel').classList.toggle('muted', !on);
   ['sc','rot','vop','lbp','iou','psz','col','hideUi','gain','rev','pan'].forEach(id=>{
@@ -144,7 +150,7 @@ function enableControls(on){
   });
 }
 
-/* ===== conectar ===== */
+// room de URL?
 const roomFromUrl = new URLSearchParams(location.search).get('room');
 if (roomFromUrl) $('#room').value = roomFromUrl.toUpperCase();
 
@@ -154,112 +160,146 @@ function connectRoom(){
   room = room.toUpperCase();
   $('#room').value = room;
   $('#roomtag').textContent = room;
-  refCtrl = db.ref(`rooms/${room}/ctrl`);
+
+  refCtrl  = db.ref(`rooms/${room}/ctrl`);
+  refAudio = db.ref(`rooms/${room}/audio`);
+
   enableControls(true);
 
-  // 1) hidratar
+  // --- leer ctrl
   refCtrl.on('value', snap => {
     const v = snap.val();
-    if (!v) { hydrating = false; return; }
+    if (!v){ hydratingCtrl = false; return; }
 
-    // solo copiamos lo que venga
-    if (typeof v.sc === 'number'){ state.sc = v.sc; $('#sc').value = v.sc; $('#scv').textContent = v.sc.toFixed(2); }
-    if (typeof v.rotDeg === 'number'){ state.rotDeg = v.rotDeg; $('#rot').value = v.rotDeg; $('#rotv').textContent = v.rotDeg.toFixed(1); }
-    if (typeof v.vop === 'number'){ state.vop = v.vop; $('#vop').value = v.vop; $('#vopv').textContent = v.vop.toFixed(2); }
-    if (typeof v.sensLBP === 'number'){ state.sensLBP = v.sensLBP; $('#lbp').value = v.sensLBP; $('#lbpv').textContent = v.sensLBP.toFixed(2); }
-    if (typeof v.thrIoU === 'number'){ state.thrIoU = v.thrIoU; $('#iou').value = v.thrIoU; $('#iouv').textContent = v.thrIoU.toFixed(2); }
-    if (typeof v.color === 'string'){ state.color = v.color; $('#col').value = v.color; $('#colv').textContent = v.color.toUpperCase(); }
-    if (typeof v.psz === 'number'){ state.psz = v.psz; $('#psz').value = v.psz; $('#pszv').textContent = v.psz.toFixed(1); }
-    if (typeof v.hideUi === 'boolean'){ state.hideUi = v.hideUi; $('#hideUi').checked = v.hideUi; }
-    // audio
-    if (typeof v.gain === 'number'){ state.gain = v.gain; $('#gain').value = v.gain; $('#gainv').textContent = v.gain.toFixed(2); }
-    if (typeof v.rev === 'number'){ state.rev = v.rev; $('#rev').value = v.rev; $('#revv').textContent = v.rev.toFixed(2); }
-    if (typeof v.pan === 'number'){ state.pan = v.pan; $('#pan').value = v.pan; $('#panv').textContent = v.pan.toFixed(2); }
+    if (typeof v.sc === 'number'){ ctrlState.sc = v.sc; $('#sc').value = v.sc; $('#scv').textContent = v.sc.toFixed(2); }
+    if (typeof v.rotDeg === 'number'){ ctrlState.rotDeg = v.rotDeg; $('#rot').value = v.rotDeg; $('#rotv').textContent = v.rotDeg.toFixed(1); }
+    if (typeof v.vop === 'number'){ ctrlState.vop = v.vop; $('#vop').value = v.vop; $('#vopv').textContent = v.vop.toFixed(2); }
+    if (typeof v.sensLBP === 'number'){ ctrlState.sensLBP = v.sensLBP; $('#lbp').value = v.sensLBP; $('#lbpv').textContent = v.sensLBP.toFixed(2); }
+    if (typeof v.thrIoU === 'number'){ ctrlState.thrIoU = v.thrIoU; $('#iou').value = v.thrIoU; $('#iouv').textContent = v.thrIoU.toFixed(2); }
+    if (typeof v.color === 'string'){ ctrlState.color = v.color; $('#col').value = v.color; $('#colv').textContent = v.color.toUpperCase(); }
+    if (typeof v.psz === 'number'){ ctrlState.psz = v.psz; $('#psz').value = v.psz; $('#pszv').textContent = v.psz.toFixed(1); }
+    if (typeof v.hideUi === 'boolean'){ ctrlState.hideUi = v.hideUi; $('#hideUi').checked = v.hideUi; }
 
-    // ya podemos mandar cambios después
-    hydrating = false;
+    hydratingCtrl = false;
+  });
+
+  // --- leer audio (otra rama)
+  refAudio.on('value', snap => {
+    const v = snap.val();
+    if (!v){ hydratingAudio = false; return; }
+
+    if (typeof v.gain === 'number'){ audioState.gain = v.gain; $('#gain').value = v.gain; $('#gainv').textContent = v.gain.toFixed(2); }
+    if (typeof v.rev  === 'number'){ audioState.rev  = v.rev;  $('#rev').value  = v.rev;  $('#revv').textContent  = v.rev.toFixed(2); }
+    if (typeof v.pan  === 'number'){ audioState.pan  = v.pan;  $('#pan').value  = v.pan;  $('#panv').textContent  = v.pan.toFixed(2); }
+
+    hydratingAudio = false;
   });
 }
 $('#connect').addEventListener('click', connectRoom);
 
-// autoconecta
+// autoconecta si no hay ?room
 if (!roomFromUrl) {
   $('#room').value = 'CASABE1';
   connectRoom();
 }
 
-/* ===== envío agrupado ===== */
-function scheduleSend(){
+// --- envío agrupado ctrl
+function scheduleSendCtrl(){
   if (!refCtrl) return;
-  if (hydrating) return;   // no mandar mientras se hidrata
-  clearTimeout(sendTimer);
-  sendTimer = setTimeout(()=>{
-    if (dirty.size === 0) return;
+  if (hydratingCtrl) return;
+  clearTimeout(sendTimerCtrl);
+  sendTimerCtrl = setTimeout(()=>{
+    if (dirtyCtrl.size === 0) return;
     const payload = {};
-    dirty.forEach(k => { payload[k] = state[k]; });
+    dirtyCtrl.forEach(k => payload[k] = ctrlState[k]);
     payload.ts = Date.now();
-    refCtrl.update(payload).catch(err=>console.error('[update]', err));
-    dirty.clear();
+    refCtrl.update(payload).catch(err=>console.error('[ctrl update]',err));
+    dirtyCtrl.clear();
+  }, SEND_DELAY);
+}
+// --- envío agrupado audio
+function scheduleSendAudio(){
+  if (!refAudio) return;
+  if (hydratingAudio) return;
+  clearTimeout(sendTimerAudio);
+  sendTimerAudio = setTimeout(()=>{
+    if (dirtyAudio.size === 0) return;
+    const payload = {};
+    dirtyAudio.forEach(k => payload[k] = audioState[k]);
+    payload.ts = Date.now();
+    refAudio.update(payload).catch(err=>console.error('[audio update]',err));
+    dirtyAudio.clear();
   }, SEND_DELAY);
 }
 
-/* ===== listeners de UI ===== */
-function onRange(id, key, mirrorSel, decimals){
+// listeners de ctrl
+function onCtrlRange(id, key, mirror, decimals){
   const el = $('#'+id);
   el.addEventListener('input', e => {
-    if (hydrating) return;
+    if (hydratingCtrl) return;
     const v = parseFloat(e.target.value);
-    // evitar mandar por cambios mínimos (sobre todo en pan)
-    if (Math.abs(state[key] - v) < 0.01) {
-      // solo espejo visual
-      if (mirrorSel) $(mirrorSel).textContent = v.toFixed(decimals);
+    if (Math.abs(ctrlState[key]-v) < 0.005) {
+      if (mirror) $(mirror).textContent = v.toFixed(decimals);
       return;
     }
-    state[key] = v;
-    if (mirrorSel) $(mirrorSel).textContent = v.toFixed(decimals);
-    dirty.add(key);
-    scheduleSend();
+    ctrlState[key] = v;
+    if (mirror) $(mirror).textContent = v.toFixed(decimals);
+    dirtyCtrl.add(key);
+    scheduleSendCtrl();
   });
 }
-onRange('sc', 'sc', '#scv', 2);
-onRange('rot', 'rotDeg', '#rotv', 1);
-onRange('vop', 'vop', '#vopv', 2);
-onRange('lbp', 'sensLBP', '#lbpv', 2);
-onRange('iou', 'thrIoU', '#iouv', 2);
-onRange('psz', 'psz', '#pszv', 1);
-onRange('gain', 'gain', '#gainv', 2);
-onRange('rev', 'rev', '#revv', 2);
+onCtrlRange('sc','sc','#scv',2);
+onCtrlRange('rot','rotDeg','#rotv',1);
+onCtrlRange('vop','vop','#vopv',2);
+onCtrlRange('lbp','sensLBP','#lbpv',2);
+onCtrlRange('iou','thrIoU','#iouv',2);
+onCtrlRange('psz','psz','#pszv',1);
 
-// paneo: igual pero lo hacemos un pelo más sensible
-$('#pan').addEventListener('input', e => {
-  if (hydrating) return;
+$('#col').addEventListener('input', e => {
+  if (hydratingCtrl) return;
+  const v = e.target.value;
+  if (ctrlState.color === v) return;
+  ctrlState.color = v;
+  $('#colv').textContent = v.toUpperCase();
+  dirtyCtrl.add('color');
+  scheduleSendCtrl();
+});
+$('#hideUi').addEventListener('change', e => {
+  if (hydratingCtrl) return;
+  ctrlState.hideUi = e.target.checked;
+  dirtyCtrl.add('hideUi');
+  scheduleSendCtrl();
+});
+
+// listeners de audio (otra rama)
+$('#gain').addEventListener('input', e => {
+  if (hydratingAudio) return;
   const v = parseFloat(e.target.value);
-  // si se mueve solo un poquito, no mandamos
-  if (Math.abs(state.pan - v) < 0.015) {
+  audioState.gain = v;
+  $('#gainv').textContent = v.toFixed(2);
+  dirtyAudio.add('gain');
+  scheduleSendAudio();
+});
+$('#rev').addEventListener('input', e => {
+  if (hydratingAudio) return;
+  const v = parseFloat(e.target.value);
+  audioState.rev = v;
+  $('#revv').textContent = v.toFixed(2);
+  dirtyAudio.add('rev');
+  scheduleSendAudio();
+});
+$('#pan').addEventListener('input', e => {
+  if (hydratingAudio) return;
+  const v = parseFloat(e.target.value);
+  // un pelín de deadzone
+  if (Math.abs(audioState.pan - v) < 0.01){
     $('#panv').textContent = v.toFixed(2);
     return;
   }
-  state.pan = v;
+  audioState.pan = v;
   $('#panv').textContent = v.toFixed(2);
-  dirty.add('pan');
-  scheduleSend();
-});
-
-$('#col').addEventListener('input', e => {
-  if (hydrating) return;
-  const v = e.target.value;
-  if (state.color === v) return;
-  state.color = v;
-  $('#colv').textContent = v.toUpperCase();
-  dirty.add('color');
-  scheduleSend();
-});
-
-$('#hideUi').addEventListener('change', e => {
-  if (hydrating) return;
-  state.hideUi = e.target.checked;
-  dirty.add('hideUi');
-  scheduleSend();
+  dirtyAudio.add('pan');
+  scheduleSendAudio();
 });
 
 // enter en room
