@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Yuca Tracker — Silueta + Audio-sync</title>
+<style>
+  :root{--ui:#111a;--bd:#333}
+  body{margin:0;background:#000;color:#eee;font-family:system-ui,Segoe UI,Arial}
+  #ui{
+    position:fixed;left:12px;top:12px;z-index:5;
+    background:var(--ui);
+    border:1px solid var(--bd);
+    padding:10px 12px;
+    border-radius:10px;
+    backdrop-filter:blur(4px)
+  }
+  label{font-size:12px;opacity:.85}
+  .row{margin:.35rem 0}
+  input[type="range"]{width:240px}
+  canvas{display:block;margin:0 auto;max-width:100vw;height:auto}
+  .ok{color:#FFE08A}.warn{color:#FFD56B}.bad{color:#FF8C8C}
+  small{opacity:.75}
+  hr{border:none;border-top:1px solid #333;opacity:.5;margin:8px 0}
+</style>
+
+<!-- p5 -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/addons/p5.sound.min.js"></script>
+</head>
+<body>
+<div id="ui">
+  <div class="row"><b>Detección cáscara de yuca</b></div>
+
+  <!-- AUDIO EN ESTA PÁGINA -->
+  <div class="row">
+    <label><input type="checkbox" id="localAudio"> Control local del audio</label>
+  </div>
+  <div class="row">
+    <label>Volumen</label><br>
+    <input id="lgain" type="range" min="0" max="1" step="0.01" value="1.0">
+    <span id="lgainv">1.00</span>
+    <small> · rem: <span id="rgain">–</span></small>
+  </div>
+  <div class="row">
+    <label>Reverb (wet)</label><br>
+    <input id="lrev" type="range" min="0" max="1" step="0.01" value="0.00">
+    <span id="lrevv">0.00</span>
+    <small> · rem: <span id="rrev">–</span></small>
+  </div>
+  <div class="row">
+    <label>Paneo</label><br>
+    <input id="lpan" type="range" min="-1" max="1" step="0.01" value="0.00">
+    <span id="lpanv">0.00</span>
+    <small> · rem: <span id="rpan">–</span></small>
+  </div>
+
+  <hr>
+
+  <div class="row">
+    <label>Imagen de referencia</label><br>
+    <input id="refInput" type="file" accept="image/*">
+  </div>
+
+  <div class="row">
+    <button id="audio">🎧 Habilitar audio</button>
+  </div>
+
+  <div class="row">
+    <label>Color construcción</label><br>
+    <input id="col" type="color" value="#88ccff">
+    <span id="colv">#88CCFF</span>
+  </div>
+
+  <div class="row">
+    <label>Tamaño partícula (px)</label><br>
+    <input id="psz" type="range" min="0.5" max="6.0" step="0.1" value="1.0">
+    <span id="pszv">1.0</span>
+  </div>
+
+  <hr>
+
+  <div class="row">
+    <label>Escala</label><br>
+    <input id="sc" type="range" min="0.30" max="2.00" step="0.01" value="0.90">
+    <span id="scv">0.90</span>
+  </div>
+  <div class="row">
+    <label>Rotación (°)</label><br>
+    <input id="rot" type="range" min="-45" max="45" step="0.1" value="0">
+    <span id="rotv">0.0</span>
+  </div>
+  <div class="row">
+    <label>Opacidad de cámara</label><br>
+    <input id="vop" type="range" min="0" max="0.7" step="0.01" value="0.10">
+    <span id="vopv">0.10</span>
+  </div>
+  <div class="row">
+    <label>Umbral textura (LBP, ↓=más estricto)</label><br>
+    <input id="lbp" type="range" min="0.05" max="0.60" step="0.01" value="0.22">
+    <span id="lbpv">0.22</span>
+  </div>
+  <div class="row">
+    <label>Umbral alineación (IoU, ↑=más estricto)</label><br>
+    <input id="iou" type="range" min="0.05" max="0.60" step="0.01" value="0.28">
+    <span id="iouv">0.28</span>
+  </div>
+
+  <div class="row">
+    <button id="center">Centrar</button>
+    <small>(arrástrame / rueda = escala · flip horizontal activado)</small>
+  </div>
+
+  <div class="row" style="font-size:12px">
+    χ² LBP: <span id="lbps">–</span> · IoU: <span id="ious">–</span> ·
+    edge%: <span id="edgep">–</span> · dark%: <span id="darkp">–</span> ·
+    Estado: <b id="state" class="bad">carga una referencia</b>
+  </div>
+</div>
+
+<script>
+/* ====== Parámetros ====== */
+const W=960,H=540, ANAL_W=240, ANAL_H=135;
+const EDGE_THR=80, MASK_LUMA=230;
+const ANALYSIS_STRIDE=3;
+const EDGE_SAMPLE_STEP=2;
+const MP3_URL='casab.mp3';
+
+// Filtros anti-mano
+const EDGE_DENS_THR=0.14;
+const DARK_FRAC_THR=0.10;
+
+/* ====== Estado visión ====== */
+let video, refImg=null, refMasked=null, silEdgeSrc=null;
+let lbpRef=null, lbpScore=null, iouScore=null;
+let edgeVidG, edgeSilG, gLBP, maskG;
+
+let pos={x:W/2,y:H/2}, sc=0.90, rot=0, vidOp=0.10;
+let sensLBP=0.22, thrIoU=0.28;
+let edgeDensity=0, darkFrac=0;
+
+/* ====== Construcción por audio ====== */
+let buildG=null, edgePoints=[];
+let amp=null, ampLevel=0;
+
+/* ====== Audio ====== */
+let audioReady=false, player=null, masterGain=null, hp=null, bp=null, reverb=null;
+let wasPrecise=false;
+
+// remoto (Firebase)
+let remoteGain = 1.0, remoteRev = 0.0, remotePan = 0.0;
+
+// local (override)
+let localAudio = false;
+let localGain = 1.0, localRev = 0.0, localPan = 0.0;
+
+/* ====== Color y tamaño ====== */
+let buildColor=[136,204,255];
+let particleSize=1.0;
+
+/* ====== UI ====== */
+const $=s=>document.querySelector(s);
+$('#sc').oninput=e=>{ sc=parseFloat(e.target.value); $('#scv').textContent=sc.toFixed(2); };
+$('#rot').oninput=e=>{ rot=radians(parseFloat(e.target.value)); $('#rotv').textContent=parseFloat(e.target.value).toFixed(1); };
+$('#vop').oninput=e=>{ vidOp=parseFloat(e.target.value); $('#vopv').textContent=vidOp.toFixed(2); };
+$('#lbp').oninput=e=>{ sensLBP=parseFloat(e.target.value); $('#lbpv').textContent=sensLBP.toFixed(2); };
+$('#iou').oninput=e=>{ thrIoU=parseFloat(e.target.value); $('#iouv').textContent=thrIoU.toFixed(2); };
+$('#center').onclick=()=>{ 
+  pos.x=W/2; pos.y=H/2; sc=0.90; rot=0; 
+  $('#sc').value=sc; $('#scv').textContent=sc.toFixed(2); 
+  $('#rot').value=0; $('#rotv').textContent='0.0'; 
+};
+$('#audio').onclick=()=>{ try{ userStartAudio(); setupAudioGraph(); }catch(e){ console.warn(e); } };
+$('#refInput').addEventListener('change', handleRef);
+$('#col').oninput=e=>{ const hex=e.target.value; $('#colv').textContent=hex.toUpperCase(); buildColor=hexToRgb(hex); };
+$('#psz').oninput=e=>{ particleSize=parseFloat(e.target.value); $('#pszv').textContent=particleSize.toFixed(1); };
+
+// AUDIO LOCAL (no escribe a Firebase)
+$('#localAudio').onchange=e=>{
+  localAudio = e.target.checked;
+};
+
+$('#lgain').oninput=e=>{
+  localGain=parseFloat(e.target.value);
+  $('#lgainv').textContent=localGain.toFixed(2);
+};
+$('#lrev').oninput=e=>{
+  localRev=parseFloat(e.target.value);
+  $('#lrevv').textContent=localRev.toFixed(2);
+};
+$('#lpan').oninput=e=>{
+  localPan=parseFloat(e.target.value);
+  $('#lpanv').textContent=localPan.toFixed(2);
+};
+
+/* ====== p5 ====== */
+function setup(){
+  createCanvas(W,H); pixelDensity(1);
+  noSmooth(); drawingContext.imageSmoothingEnabled=false;
+
+  video=createCapture({video:{facingMode:'environment',width:640,height:480},audio:false});
+  video.size(ANAL_W,ANAL_H); video.hide();
+
+  edgeVidG=createGraphics(ANAL_W,ANAL_H);
+  edgeSilG=createGraphics(ANAL_W,ANAL_H);
+  gLBP=createGraphics(ANAL_W,ANAL_H);
+  maskG=createGraphics(ANAL_W,ANAL_H);
+}
+
+function draw(){
+  background(0);
+
+  // cámara tenue (espejo H)
+  push(); translate(W,0); scale(-1,1); tint(255,255*vidOp); image(video,0,0,W,H); pop();
+
+  // LBP
+  if(refImg){
+    if(!lbpRef){ 
+      const gRef=createGraphics(ANAL_W,ANAL_H); 
+      gRef.image(refImg,0,0,ANAL_W,ANAL_H); 
+      lbpRef=computeLBP(gRef); 
+    }
+    gLBP.image(video,0,0,ANAL_W,ANAL_H);
+    lbpScore = chi2(lbpRef, computeLBP(gLBP));
+    $('#lbps').textContent = lbpScore.toFixed(3);
+  }
+
+  // IoU + métricas internas
+  if(silEdgeSrc && frameCount%ANALYSIS_STRIDE===0){
+    // edges del video
+    edgeVidG.push(); edgeVidG.translate(ANAL_W,0); edgeVidG.scale(-1,1);
+    edgeVidG.image(video,0,0,ANAL_W,ANAL_H); edgeVidG.pop();
+    const vidEdges=sobelBinary(edgeVidG,EDGE_THR);
+
+    // silueta transformada
+    edgeSilG.clear(); edgeSilG.push();
+    edgeSilG.translate(pos.x*(ANAL_W/W), pos.y*(ANAL_H/H));
+    edgeSilG.rotate(rot); edgeSilG.scale(-1,1);
+    const wSil=silEdgeSrc.width*(ANAL_W/W)*sc, hSil=silEdgeSrc.height*(ANAL_H/H)*sc;
+    edgeSilG.imageMode(CENTER); edgeSilG.image(silEdgeSrc,0,0,wSil,hSil); edgeSilG.pop();
+    const silEdges=binaryFromGfx(edgeSilG);
+
+    // IoU
+    let inter=0,uni=0;
+    for(let i=0;i<silEdges.length;i++){
+      const a=silEdges[i],b=vidEdges[i];
+      if(a||b){uni++; if(a&&b) inter++;}
+    }
+    iouScore=uni>0?inter/uni:0;
+    $('#ious').textContent=iouScore.toFixed(3);
+
+    // máscara interior
+    maskG.clear(); maskG.push();
+    maskG.translate(pos.x*(ANAL_W/W), pos.y*(ANAL_H/H));
+    maskG.rotate(rot); maskG.scale(-1,1);
+    const srcForMask = refMasked || silEdgeSrc;
+    const mw=srcForMask.width*(ANAL_W/W)*sc, mh=srcForMask.height*(ANAL_H/H)*sc;
+    maskG.imageMode(CENTER); maskG.image(srcForMask,0,0,mw,mh); maskG.pop();
+
+    const maskArr = alphaToBinary(maskG);
+    const edgeArr = sobelBinary(edgeVidG, EDGE_THR);
+    const lumArr  = luminanceArray(edgeVidG);
+    let mcount=0, ecount=0, dcount=0;
+    for(let i=0;i<maskArr.length;i++){
+      if(maskArr[i]){
+        mcount++;
+        if(edgeArr[i]) ecount++;
+        if(lumArr[i]<105) dcount++;
+      }
+    }
+    edgeDensity = mcount ? ecount/mcount : 0;
+    darkFrac    = mcount ? dcount/mcount : 0;
+    $('#edgep').textContent = (edgeDensity*100).toFixed(1);
+    $('#darkp').textContent = (darkFrac*100).toFixed(1);
+  }
+
+  const precise = (lbpScore!==null && iouScore!==null)
+               && (lbpScore <= sensLBP)
+               && (iouScore  >= thrIoU)
+               && (edgeDensity >= EDGE_DENS_THR)
+               && (darkFrac    >= DARK_FRAC_THR);
+
+  // ===== AUDIO ANALYSIS =====
+  if(amp && player && player.isPlaying()){
+    const lvl = amp.getLevel(); ampLevel = lerp(ampLevel, lvl, 0.15);
+  } else {
+    ampLevel = lerp(ampLevel, 0, 0.25);
+  }
+
+  // ===== DIBUJO =====
+  if(silEdgeSrc){
+    push(); translate(pos.x,pos.y); rotate(rot); scale(-sc,sc); imageMode(CENTER);
+
+    const baseAlpha = precise ? 60 : 190;
+    tint(210,210,210, baseAlpha);
+    image(silEdgeSrc, 0, 0);
+
+    if(precise){
+      const aBlink = constrain(map(ampLevel, 0, 0.4, 150, 255), 150, 255);
+      tint(255,255,255, aBlink);
+      image(silEdgeSrc, 0, 0);
+
+      if(buildG){
+        buildG.push();
+        buildG.drawingContext.globalCompositeOperation='destination-out';
+        buildG.noStroke(); buildG.fill(0,0,0, 8);
+        buildG.rect(0,0,buildG.width,buildG.height);
+        buildG.drawingContext.globalCompositeOperation='source-over';
+        buildG.pop();
+
+        const k = Math.floor(constrain(map(ampLevel, 0, 0.5, 0, 160), 0, 300));
+        buildG.noFill();
+        buildG.stroke(buildColor[0], buildColor[1], buildColor[2]);
+        buildG.strokeWeight(particleSize);
+
+        for(let i=0;i<k && edgePoints.length>0;i++){
+          const p = edgePoints[(Math.random()*edgePoints.length)|0];
+          if(particleSize<=1.2){ buildG.point(p.x,p.y); }
+          else{
+            const dx=(Math.random()<0.5?-1:1), dy=(Math.random()<0.5?-1:1);
+            buildG.line(p.x,p.y, p.x+dx, p.y+dy);
+          }
+        }
+
+        tint(255,255,255,220);
+        image(buildG,0,0);
+      }
+    }
+    pop();
+  }
+
+  // ===== AUDIO APLICADO =====
+  if (audioReady && player){
+    // si localAudio está activo, NO dejamos que el remoto pise
+    const g = localAudio ? localGain : remoteGain;
+    const r = localAudio ? localRev  : remoteRev;
+    const p = localAudio ? localPan  : remotePan;
+
+    const targetAmp = precise ? g : 0.0;
+
+    if (precise && !wasPrecise){
+      if(!player.isPlaying()) player.loop();
+    }
+
+    if (masterGain){ masterGain.amp(targetAmp, precise ? 0.06 : 0.03); }
+    if (reverb){ reverb.drywet(r); }
+    if (typeof player.pan === 'function'){ player.pan(p); }
+
+    if (!precise && wasPrecise){
+      if(player.isPlaying()) player.pause();
+    }
+  }
+
+  wasPrecise = precise;
+
+  $('#state').textContent = precise ? 'DETECTADO' : (refImg?'buscando…':'carga una referencia');
+  $('#state').className   = precise ? 'ok' : (refImg?'bad':'warn');
+}
+
+/* ====== Audio graph ====== */
+function setupAudioGraph(){
+  if(audioReady) return;
+  masterGain=new p5.Gain(); masterGain.amp(0); masterGain.connect();
+  hp=new p5.Filter('highpass'); hp.freq(160); hp.res(1);
+  bp=new p5.Filter('bandpass'); bp.freq(1400); bp.res(14);
+  reverb=new p5.Reverb(); reverb.process(masterGain, 2.6, 3); reverb.drywet(0);
+  amp=new p5.Amplitude(0.9);
+  audioReady=true;
+
+  if(!player){
+    loadSound(MP3_URL, snd=>{
+      player=snd; player.setLoop(true);
+      player.disconnect(); player.connect(hp); hp.connect(bp); bp.connect(masterGain);
+      amp.setInput(player);
+      console.log('[audio] casab.mp3 cargado');
+    }, err=>console.error('[audio] error cargando', err));
+  }
+}
+
+/* ====== Visión utilidades ====== */
+function handleRef(ev){
+  const f=ev.target.files[0]; if(!f) return;
+  const fr=new FileReader();
+  fr.onload=()=>{
+    loadImage(fr.result, img=>{
+      refImg=img; lbpRef=null;
+
+      refMasked = maskByLuma(img, MASK_LUMA);
+      const src = hasAnyAlpha(refMasked) ? refMasked : img;
+
+      silEdgeSrc = buildEdgeSilhouetteThin(src, EDGE_THR);
+
+      buildG=createGraphics(silEdgeSrc.width, silEdgeSrc.height);
+      buildG.clear(); buildG.drawingContext.imageSmoothingEnabled=false;
+      buildG.noSmooth && buildG.noSmooth();
+      edgePoints = extractEdgePoints(silEdgeSrc, EDGE_SAMPLE_STEP);
+
+      $('#state').textContent='ajusta la silueta y alinea';
+    });
+  };
+  fr.readAsDataURL(f);
+}
+
+function maskByLuma(img,thr=230){
+  const g=createGraphics(img.width,img.height); g.image(img,0,0); g.loadPixels();
+  for(let i=0;i<g.pixels.length;i+=4){
+    const r=g.pixels[i],gg=g.pixels[i+1],b=g.pixels[i+2];
+    const L=0.299*r+0.587*gg+0.114*b;
+    g.pixels[i+3]=(L>thr)?0:255;
+  }
+  g.updatePixels(); return g;
+}
+function hasAnyAlpha(gfx){ gfx.loadPixels(); for(let i=3;i<gfx.pixels.length;i+=4){ if(gfx.pixels[i]>0) return true; } return false; }
+
+function alphaToBinary(gfx){
+  gfx.loadPixels();
+  const w=gfx.width,h=gfx.height,out=new Uint8Array(w*h);
+  for(let i=0;i<w*h;i++) out[i]=(gfx.pixels[4*i+3]>0)?1:0;
+  return out;
+}
+function luminanceArray(gfx){
+  gfx.loadPixels();
+  const w=gfx.width,h=gfx.height,out=new Uint8Array(w*h);
+  for(let i=0;i<w*h;i++){
+    const p=4*i;
+    out[i]=(0.299*gfx.pixels[p]+0.587*gfx.pixels[p+1]+0.114*gfx.pixels[p+2])|0;
+  }
+  return out;
+}
+function extractEdgePoints(edgeImg, step=2){
+  const pts=[]; edgeImg.loadPixels();
+  const w=edgeImg.width,h=edgeImg.height;
+  for(let y=0;y<h;y+=step){
+    for(let x=0;x<w;x+=step){
+      const a=edgeImg.pixels[4*(y*w+x)+3];
+      if(a>200) pts.push({x,y});
+    }
+  }
+  return pts;
+}
+function buildEdgeSilhouetteThin(src, thr=80){
+  const w=src.width, h=src.height;
+  const g=createGraphics(w,h); g.image(src,0,0); g.loadPixels();
+
+  const L=new Float32Array(w*h);
+  for(let y=0;y<h;y++) for(let x=0;x<w;x++){
+    const p=4*(y*w+x); L[y*w+x]=0.299*g.pixels[p]+0.587*g.pixels[p+1]+0.114*g.pixels[p+2];
+  }
+
+  const Mag=new Uint16Array(w*h), Dir=new Uint8Array(w*h);
+  for(let y=1;y<h-1;y++){
+    for(let x=1;x<w-1;x++){
+      const i=y*w+x;
+      const a=L[(y-1)*w+(x-1)], b=L[(y-1)*w+x], c=L[(y-1)*w+(x+1)];
+      const d=L[y*w+(x-1)], f=L[y*w+(x+1)];
+      const g1=L[(y+1)*w+(x-1)],h1=L[(y+1)*w+x],k=L[(y+1)*w+(x+1)];
+      const gx=-a -2*d -g1 + c +2*f + k;
+      const gy=-a -2*b -c  + g1+2*h1 + k;
+      const mag=Math.abs(gx)+Math.abs(gy);
+      Mag[i]=mag;
+      let ang=Math.atan2(gy,gx)*180/Math.PI; if(ang<0) ang+=180;
+      Dir[i]=(ang<22.5||ang>=157.5)?0:(ang<67.5)?45:(ang<112.5)?90:135;
+    }
+  }
+  const Thin=new Uint16Array(w*h);
+  for(let y=1;y<h-1;y++){
+    for(let x=1;x<w-1;x++){
+      const i=y*w+x, m=Mag[i], d=Dir[i];
+      let m1=0,m2=0;
+      if(d===0){m1=Mag[i-1]; m2=Mag[i+1];}
+      else if(d===45){m1=Mag[(y-1)*w+(x+1)]; m2=Mag[(y+1)*w+(x-1)];}
+      else if(d===90){m1=Mag[(y-1)*w+x]; m2=Mag[(y+1)*w+x];}
+      else {m1=Mag[(y-1)*w+(x-1)]; m2=Mag[(y+1)*w+(x+1)];}
+      Thin[i]=(m>=m1 && m>=m2)? m : 0;
+    }
+  }
+  const out=createGraphics(w,h); out.loadPixels();
+  for(let y=0;y<h;y++){
+    for(let x=0;x<w;x++){
+      const i=y*w+x, p=4*i, on=(Thin[i]>thr)?255:0;
+      out.pixels[p]=255; out.pixels[p+1]=255; out.pixels[p+2]=255; out.pixels[p+3]=on;
+    }
+  }
+  out.updatePixels(); return out;
+}
+function sobelBinary(gfx,thr=80){
+  gfx.loadPixels();
+  const w=gfx.width,h=gfx.height, bin=new Uint8Array(w*h);
+  const lum=(i)=>{const r=gfx.pixels[i],g=gfx.pixels[i+1],b=gfx.pixels[i+2]; return (0.299*r+0.587*g+0.114*b)|0;}
+  const idx=(x,y)=>4*(y*w+x);
+  for(let y=1;y<h-1;y++){
+    for(let x=1;x<w-1;x++){
+      const i=idx(x,y);
+      const a=lum(idx(x-1,y-1)), b=lum(idx(x,y-1)), c=lum(idx(x+1,y-1));
+      const d=lum(idx(x-1,y  )), f=lum(idx(x+1,y  ));
+      const g=lum(idx(x-1,y+1)), h1=lum(idx(x,y+1)), k=lum(idx(x+1,y+1));
+      const gx=-a-2*d-g + c+2*f+k, gy=-a-2*b-c + g+2*h1+k, mag=Math.abs(gx)+Math.abs(gy);
+      bin[y*w+x]=(mag>thr)?1:0;
+    }
+  }
+  return bin;
+}
+function binaryFromGfx(gfx){
+  gfx.loadPixels(); const w=gfx.width,h=gfx.height, bin=new Uint8Array(w*h);
+  for(let y=0;y<h;y++) for(let x=0;x<w;x++){ const p=4*(y*w+x); bin[y*w+x]=(gfx.pixels[p+3]>0)?1:0; }
+  return bin;
+}
+function computeLBP(gfx){
+  gfx.loadPixels();
+  const w=gfx.width,h=gfx.height, hist=new Float32Array(256);
+  const idx=(x,y)=>4*(y*w+x);
+  const L=(x,y)=>{const i=idx(x,y); const r=gfx.pixels[i],gr=gfx.pixels[i+1],b=gfx.pixels[i+2]; return 0.299*r+0.587*gr+0.114*b;}
+  for(let y=1;y<h-1;y++){
+    for(let x=1;x<w-1;x++){
+      const c=L(x,y); let code=0;
+      code|=(L(x-1,y-1)>c)<<7; code|=(L(x,  y-1)>c)<<6; code|=(L(x+1,y-1)>c)<<5;
+      code|=(L(x+1,y  )>c)<<4; code|=(L(x+1,y+1)>c)<<3; code|=(L(x,  y+1)>c)<<2;
+      code|=(L(x-1,y+1)>c)<<1; code|=(L(x-1,y  )>c)<<0; hist[code]++;
+    }
+  }
+  let s=0; for(let i=0;i<256;i++) s+=hist[i]; if(s>0){ for(let i=0;i<256;i++) hist[i]/=s; }
+  return hist;
+}
+function chi2(h1,h2){ let s=0; for(let i=0;i<256;i++){ const a=h1[i],b=h2[i],d=a-b,m=a+b; if(m>0) s+=(d*d)/m; } return 0.5*s; }
+function hexToRgb(hex){ const v=hex.replace('#',''); return [parseInt(v.slice(0,2),16),parseInt(v.slice(2,4),16),parseInt(v.slice(4,6),16)]; }
+</script>
+
+<!-- Firebase (solo lectura) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-database-compat.js"></script>
+<script>
+const firebaseConfig = {
+  apiKey: "AIzaSyBjuVLR5PDrQ6WpRvIt3561fNzabscw-NI",
+  authDomain: "yuca-8f746.firebaseapp.com",
+  databaseURL: "https://yuca-8f746-default-rtdb.firebaseio.com",
+  projectId: "yuca-8f746",
+  storageBucket: "yuca-8f746.firebasestorage.app",
+  messagingSenderId: "103587360233",
+  appId: "1:103587360233:web:5e64f1be508848ee97af78",
+  measurementId: "G-4WJT8PF1C8"
+};
+if (firebase.apps.length === 0) { firebase.initializeApp(firebaseConfig); }
+const db = firebase.database();
+
+const ROOM = (new URLSearchParams(location.search).get('room') || 'CASABE1').toUpperCase();
+const refCtrl = db.ref(`rooms/${ROOM}/ctrl`);
+
+refCtrl.on('value', snap => {
+  const v = snap.val(); if (!v) return;
+
+  // VISUAL
+  if (typeof v.sc === 'number'){ sc = constrain(v.sc, 0.3, 2.0); const i=document.getElementById('sc'); if(i) i.value=sc; const l=document.getElementById('scv'); if(l) l.textContent=sc.toFixed(2); }
+  if (typeof v.rotDeg === 'number'){ rot = radians(v.rotDeg); const i=document.getElementById('rot'); if(i) i.value=v.rotDeg; const l=document.getElementById('rotv'); if(l) l.textContent=v.rotDeg.toFixed(1); }
+  if (typeof v.vop === 'number'){ vidOp = v.vop; const i=document.getElementById('vop'); if(i) i.value=vidOp; const l=document.getElementById('vopv'); if(l) l.textContent=vidOp.toFixed(2); }
+  if (typeof v.sensLBP === 'number'){ sensLBP = v.sensLBP; const i=document.getElementById('lbp'); if(i) i.value=sensLBP; const l=document.getElementById('lbpv'); if(l) l.textContent=sensLBP.toFixed(2); }
+  if (typeof v.thrIoU === 'number'){ thrIoU = v.thrIoU; const i=document.getElementById('iou'); if(i) i.value=thrIoU; const l=document.getElementById('iouv'); if(l) l.textContent=thrIoU.toFixed(2); }
+  if (typeof v.psz === 'number'){ particleSize = v.psz; const i=document.getElementById('psz'); if(i) i.value=particleSize; const l=document.getElementById('pszv'); if(l) l.textContent=particleSize.toFixed(1); }
+  if (typeof v.color === 'string'){
+    buildColor = (function(hex){ const h=hex.replace('#',''); return [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)]; })(v.color);
+    const col=document.getElementById('col'), colv=document.getElementById('colv');
+    if (col) col.value=v.color;
+    if (colv) colv.textContent=v.color.toUpperCase();
+  }
+  if (typeof v.hideUi === 'boolean'){
+    const ui=document.getElementById('ui');
+    if (ui) ui.style.display = v.hideUi ? 'none' : '';
+  }
+
+  // AUDIO REMOTO — SOLO ACTUALIZAMOS VALORES, NO TOCAMOS SLIDERS LOCALES
+  if (typeof v.gain === 'number' && !localAudio){
+    remoteGain = Math.min(1, Math.max(0, v.gain));
+  }
+  if (typeof v.rev === 'number' && !localAudio){
+    remoteRev = Math.min(1, Math.max(0, v.rev));
+  }
+  if (typeof v.pan === 'number' && !localAudio){
+    remotePan = Math.max(-1, Math.min(1, v.pan));
+  }
+
+  // mostrar siempre en numeritos remotos
+  const rg = document.getElementById('rgain');
+  if (rg && typeof v.gain === 'number') rg.textContent = v.gain.toFixed(2);
+  const rr = document.getElementById('rrev');
+  if (rr && typeof v.rev === 'number') rr.textContent = v.rev.toFixed(2);
+  const rp = document.getElementById('rpan');
+  if (rp && typeof v.pan === 'number') rp.textContent = v.pan.toFixed(2);
+});
+
+// hotkey
+window.addEventListener('keydown',(e)=>{
+  if(e.key.toLowerCase()==='u'){
+    const ui=document.getElementById('ui');
+    const hidden=(ui.style.display==='none');
+    ui.style.display = hidden ? '' : 'none';
+    try{ refCtrl.update({ hideUi: !hidden, ts: Date.now() }); }catch(_){}
+  }
+});
+</script>
+</body>
+</html>
