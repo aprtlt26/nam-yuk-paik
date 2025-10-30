@@ -27,6 +27,10 @@
 <!-- p5 -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/addons/p5.sound.min.js"></script>
+
+<!-- Firebase compat -->
+<script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-database-compat.js"></script>
 </head>
 <body>
 <div id="ui">
@@ -126,7 +130,7 @@ const ANALYSIS_STRIDE=3;
 const EDGE_SAMPLE_STEP=2;
 const MP3_URL='casab.mp3';
 
-// Filtros anti-mano
+// filtros anti-mano
 const EDGE_DENS_THR=0.14;
 const DARK_FRAC_THR=0.10;
 
@@ -147,7 +151,7 @@ let amp=null, ampLevel=0;
 let audioReady=false, player=null, masterGain=null, hp=null, bp=null, reverb=null;
 let wasPrecise=false;
 
-// remoto (Firebase)
+// remoto (viene de /audio)
 let remoteGain = 1.0, remoteRev = 0.0, remotePan = 0.0;
 
 // local (override)
@@ -175,23 +179,11 @@ $('#refInput').addEventListener('change', handleRef);
 $('#col').oninput=e=>{ const hex=e.target.value; $('#colv').textContent=hex.toUpperCase(); buildColor=hexToRgb(hex); };
 $('#psz').oninput=e=>{ particleSize=parseFloat(e.target.value); $('#pszv').textContent=particleSize.toFixed(1); };
 
-// AUDIO LOCAL (no escribe a Firebase)
-$('#localAudio').onchange=e=>{
-  localAudio = e.target.checked;
-};
-
-$('#lgain').oninput=e=>{
-  localGain=parseFloat(e.target.value);
-  $('#lgainv').textContent=localGain.toFixed(2);
-};
-$('#lrev').oninput=e=>{
-  localRev=parseFloat(e.target.value);
-  $('#lrevv').textContent=localRev.toFixed(2);
-};
-$('#lpan').oninput=e=>{
-  localPan=parseFloat(e.target.value);
-  $('#lpanv').textContent=localPan.toFixed(2);
-};
+// AUDIO LOCAL
+$('#localAudio').onchange=e=>{ localAudio = e.target.checked; };
+$('#lgain').oninput=e=>{ localGain=parseFloat(e.target.value); $('#lgainv').textContent=localGain.toFixed(2); };
+$('#lrev').oninput=e=>{ localRev=parseFloat(e.target.value); $('#lrevv').textContent=localRev.toFixed(2); };
+$('#lpan').oninput=e=>{ localPan=parseFloat(e.target.value); $('#lpanv').textContent=localPan.toFixed(2); };
 
 /* ====== p5 ====== */
 function setup(){
@@ -210,7 +202,7 @@ function setup(){
 function draw(){
   background(0);
 
-  // cámara tenue (espejo H)
+  // cámara
   push(); translate(W,0); scale(-1,1); tint(255,255*vidOp); image(video,0,0,W,H); pop();
 
   // LBP
@@ -225,14 +217,12 @@ function draw(){
     $('#lbps').textContent = lbpScore.toFixed(3);
   }
 
-  // IoU + métricas internas
+  // IoU, densidad, etc
   if(silEdgeSrc && frameCount%ANALYSIS_STRIDE===0){
-    // edges del video
     edgeVidG.push(); edgeVidG.translate(ANAL_W,0); edgeVidG.scale(-1,1);
     edgeVidG.image(video,0,0,ANAL_W,ANAL_H); edgeVidG.pop();
     const vidEdges=sobelBinary(edgeVidG,EDGE_THR);
 
-    // silueta transformada
     edgeSilG.clear(); edgeSilG.push();
     edgeSilG.translate(pos.x*(ANAL_W/W), pos.y*(ANAL_H/H));
     edgeSilG.rotate(rot); edgeSilG.scale(-1,1);
@@ -240,7 +230,6 @@ function draw(){
     edgeSilG.imageMode(CENTER); edgeSilG.image(silEdgeSrc,0,0,wSil,hSil); edgeSilG.pop();
     const silEdges=binaryFromGfx(edgeSilG);
 
-    // IoU
     let inter=0,uni=0;
     for(let i=0;i<silEdges.length;i++){
       const a=silEdges[i],b=vidEdges[i];
@@ -249,7 +238,6 @@ function draw(){
     iouScore=uni>0?inter/uni:0;
     $('#ious').textContent=iouScore.toFixed(3);
 
-    // máscara interior
     maskG.clear(); maskG.push();
     maskG.translate(pos.x*(ANAL_W/W), pos.y*(ANAL_H/H));
     maskG.rotate(rot); maskG.scale(-1,1);
@@ -280,14 +268,14 @@ function draw(){
                && (edgeDensity >= EDGE_DENS_THR)
                && (darkFrac    >= DARK_FRAC_THR);
 
-  // ===== AUDIO ANALYSIS =====
+  // nivel audio
   if(amp && player && player.isPlaying()){
     const lvl = amp.getLevel(); ampLevel = lerp(ampLevel, lvl, 0.15);
   } else {
     ampLevel = lerp(ampLevel, 0, 0.25);
   }
 
-  // ===== DIBUJO =====
+  // dibujo
   if(silEdgeSrc){
     push(); translate(pos.x,pos.y); rotate(rot); scale(-sc,sc); imageMode(CENTER);
 
@@ -329,9 +317,8 @@ function draw(){
     pop();
   }
 
-  // ===== AUDIO APLICADO =====
+  // AUDIO APLICADO
   if (audioReady && player){
-    // si localAudio está activo, NO dejamos que el remoto pise
     const g = localAudio ? localGain : remoteGain;
     const r = localAudio ? localRev  : remoteRev;
     const p = localAudio ? localPan  : remotePan;
@@ -400,7 +387,6 @@ function handleRef(ev){
   };
   fr.readAsDataURL(f);
 }
-
 function maskByLuma(img,thr=230){
   const g=createGraphics(img.width,img.height); g.image(img,0,0); g.loadPixels();
   for(let i=0;i<g.pixels.length;i+=4){
@@ -411,7 +397,6 @@ function maskByLuma(img,thr=230){
   g.updatePixels(); return g;
 }
 function hasAnyAlpha(gfx){ gfx.loadPixels(); for(let i=3;i<gfx.pixels.length;i+=4){ if(gfx.pixels[i]>0) return true; } return false; }
-
 function alphaToBinary(gfx){
   gfx.loadPixels();
   const w=gfx.width,h=gfx.height,out=new Uint8Array(w*h);
@@ -441,12 +426,11 @@ function extractEdgePoints(edgeImg, step=2){
 function buildEdgeSilhouetteThin(src, thr=80){
   const w=src.width, h=src.height;
   const g=createGraphics(w,h); g.image(src,0,0); g.loadPixels();
-
   const L=new Float32Array(w*h);
   for(let y=0;y<h;y++) for(let x=0;x<w;x++){
-    const p=4*(y*w+x); L[y*w+x]=0.299*g.pixels[p]+0.587*g.pixels[p+1]+0.114*g.pixels[p+2];
+    const p=4*(y*w+x);
+    L[y*w+x]=0.299*g.pixels[p]+0.587*g.pixels[p+1]+0.114*g.pixels[p+2];
   }
-
   const Mag=new Uint16Array(w*h), Dir=new Uint8Array(w*h);
   for(let y=1;y<h-1;y++){
     for(let x=1;x<w-1;x++){
@@ -525,11 +509,9 @@ function chi2(h1,h2){ let s=0; for(let i=0;i<256;i++){ const a=h1[i],b=h2[i],d=a
 function hexToRgb(hex){ const v=hex.replace('#',''); return [parseInt(v.slice(0,2),16),parseInt(v.slice(2,4),16),parseInt(v.slice(4,6),16)]; }
 </script>
 
-<!-- Firebase (solo lectura) -->
-<script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-database-compat.js"></script>
 <script>
-const firebaseConfig = {
+// ===== Firebase (solo lectura) PERO separando ramas
+const fbConf = {
   apiKey: "AIzaSyBjuVLR5PDrQ6WpRvIt3561fNzabscw-NI",
   authDomain: "yuca-8f746.firebaseapp.com",
   databaseURL: "https://yuca-8f746-default-rtdb.firebaseio.com",
@@ -539,16 +521,20 @@ const firebaseConfig = {
   appId: "1:103587360233:web:5e64f1be508848ee97af78",
   measurementId: "G-4WJT8PF1C8"
 };
-if (firebase.apps.length === 0) { firebase.initializeApp(firebaseConfig); }
+if (firebase.apps.length === 0) { firebase.initializeApp(fbConf); }
 const db = firebase.database();
 
 const ROOM = (new URLSearchParams(location.search).get('room') || 'CASABE1').toUpperCase();
-const refCtrl = db.ref(`rooms/${ROOM}/ctrl`);
 
+// 👉 VISUAL: acá SOLO cosas de cámara / silueta
+const refCtrl = db.ref(`rooms/${ROOM}/ctrl`);
+// 👉 AUDIO: acá SOLO curvas de audio
+const refAudio = db.ref(`rooms/${ROOM}/audio`);
+
+// leer ctrl
 refCtrl.on('value', snap => {
   const v = snap.val(); if (!v) return;
 
-  // VISUAL
   if (typeof v.sc === 'number'){ sc = constrain(v.sc, 0.3, 2.0); const i=document.getElementById('sc'); if(i) i.value=sc; const l=document.getElementById('scv'); if(l) l.textContent=sc.toFixed(2); }
   if (typeof v.rotDeg === 'number'){ rot = radians(v.rotDeg); const i=document.getElementById('rot'); if(i) i.value=v.rotDeg; const l=document.getElementById('rotv'); if(l) l.textContent=v.rotDeg.toFixed(1); }
   if (typeof v.vop === 'number'){ vidOp = v.vop; const i=document.getElementById('vop'); if(i) i.value=vidOp; const l=document.getElementById('vopv'); if(l) l.textContent=vidOp.toFixed(2); }
@@ -565,25 +551,20 @@ refCtrl.on('value', snap => {
     const ui=document.getElementById('ui');
     if (ui) ui.style.display = v.hideUi ? 'none' : '';
   }
+});
 
-  // AUDIO REMOTO — SOLO ACTUALIZAMOS VALORES, NO TOCAMOS SLIDERS LOCALES
-  if (typeof v.gain === 'number' && !localAudio){
-    remoteGain = Math.min(1, Math.max(0, v.gain));
+// leer audio
+refAudio.on('value', snap => {
+  const v = snap.val(); if (!v) return;
+  // si el usuario NO está en modo local, sí aplicamos
+  if (!localAudio) {
+    if (typeof v.gain === 'number'){ remoteGain = Math.min(1, Math.max(0, v.gain)); }
+    if (typeof v.rev  === 'number'){ remoteRev  = Math.min(1, Math.max(0, v.rev)); }
+    if (typeof v.pan  === 'number'){ remotePan  = Math.max(-1, Math.min(1, v.pan)); }
   }
-  if (typeof v.rev === 'number' && !localAudio){
-    remoteRev = Math.min(1, Math.max(0, v.rev));
-  }
-  if (typeof v.pan === 'number' && !localAudio){
-    remotePan = Math.max(-1, Math.min(1, v.pan));
-  }
-
-  // mostrar siempre en numeritos remotos
-  const rg = document.getElementById('rgain');
-  if (rg && typeof v.gain === 'number') rg.textContent = v.gain.toFixed(2);
-  const rr = document.getElementById('rrev');
-  if (rr && typeof v.rev === 'number') rr.textContent = v.rev.toFixed(2);
-  const rp = document.getElementById('rpan');
-  if (rp && typeof v.pan === 'number') rp.textContent = v.pan.toFixed(2);
+  const rg = document.getElementById('rgain'); if (rg && typeof v.gain === 'number') rg.textContent = v.gain.toFixed(2);
+  const rr = document.getElementById('rrev');  if (rr && typeof v.rev  === 'number') rr.textContent = v.rev.toFixed(2);
+  const rp = document.getElementById('rpan');  if (rp && typeof v.pan  === 'number') rp.textContent = v.pan.toFixed(2);
 });
 
 // hotkey
@@ -598,3 +579,4 @@ window.addEventListener('keydown',(e)=>{
 </script>
 </body>
 </html>
+
